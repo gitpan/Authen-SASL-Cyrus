@@ -1,5 +1,13 @@
 History of updates to Authen::SASL::Cyrus
 
+0.05
+Added the SASL_CB_PASS callback. This callback, unfortunately, does
+not put the caller's "context" as the first parameter to the callback
+function. This means that the PerlCallback() function has to be able
+to determine if the _perlcontext is the first parameter or the second.
+Added a magic number as the first field of the _perlcontext struct
+to help PerlCallback() decide which parameter is the perl context.
+
 0.04
 Added a method "securesocket" that takes a file handle and returns a
 new file handle that is tied to the Security subclass added in 0.03. 

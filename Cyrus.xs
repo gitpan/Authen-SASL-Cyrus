@@ -25,8 +25,12 @@ struct authensasl {
 };
 
 
+/* A unique looking number to help PerlCallback() determine which parameter is
+   the context. Apparently not all callbacks get the context as the first */
+#define PERLCONTEXT_MAGIC 0x0001ABCD
 
 struct _perlcontext {
+  unsigned long magic;
   int id;
   SV *func;
   SV *param;
@@ -53,13 +57,22 @@ struct _perlcontext {
 
 int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
 {
+  char *c;
   int i, intparam, count, rc=0;
   unsigned int len=0;
   struct _perlcontext *cp;
+  sasl_secret_t *pass;
   SV *rsv;
 
 
+
   cp = (struct _perlcontext *)perlcontext;
+
+  /* For SASL_CB_PASS, the context is in the SECOND param
+  if ((cp == NULL) || (cp->magic != PERLCONTEXT_MAGIC)) {
+    cp = (struct _perlcontext *)arg1;
+  }
+  */
 
   /* If there is no function to call, just return the "parameter" */
   if (cp->func == NULL) {
@@ -72,6 +85,18 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
         else  {
           *((char **)arg1) = SvPV(cp->param, len);
           if (arg2) *((unsigned *)arg2) = len;
+        }
+        break;
+      case SASL_CB_PASS:
+        arg1 = SvPV(cp->param, len);
+        pass = (sasl_secret_t *)malloc(len+sizeof(sasl_secret_t));
+        if (pass == NULL) {
+          rc = -1;
+        }
+        else {
+          pass->len = len;
+          strcpy(pass->data, arg1);
+          *((sasl_secret_t **)arg2) = pass;
         }
         break;
       default:
@@ -95,6 +120,7 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
       case SASL_CB_USER:
       case SASL_CB_AUTHNAME:
       case SASL_CB_LANGUAGE:
+      case SASL_CB_PASS:
         /* No additional parameters to load */
         break;
       default:
@@ -117,9 +143,30 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
         case SASL_CB_AUTHNAME:
         case SASL_CB_LANGUAGE:
           rsv = POPs;
-          *((char **)arg1) = SvPV(rsv, len);
-          if (arg2) *((unsigned *)arg2) = len;
+          arg0 = SvPV(rsv, len);
+          c = (char *)malloc(len+1);
+          if (c) {
+            strncpy(c, arg0, len);
+            c[len] = '\0';
+            if (arg2) *((unsigned *)arg2) = len;
+            *((char **)arg1) = c;
+          }
+          else {
+            rc = -1;
+          }
           break;
+        case SASL_CB_PASS:
+          rsv = POPs;
+          arg1 = SvPV(rsv, len);
+          pass = (sasl_secret_t *)malloc(len+sizeof(sasl_secret_t));
+          if (pass == NULL) {
+            rc = -1;
+          }
+          else {
+            pass->len = len;
+            strcpy(pass->data, arg1);
+            *((sasl_secret_t **)arg2) = pass;
+          }
         default:
           break;
       }
@@ -167,8 +214,10 @@ int CallbackNumber(char *name)
   if (!strcasecmp(name, "user"))          return(SASL_CB_USER);
   else if (!strcasecmp(name, "auth"))     return(SASL_CB_AUTHNAME);
   else if (!strcasecmp(name, "language")) return(SASL_CB_LANGUAGE);
+  else if (!strcasecmp(name, "password")) return(SASL_CB_PASS);
+  else if (!strcasecmp(name, "pass"))     return(SASL_CB_PASS);
 
-  croak("Unknown callback: '%s'. (user|auth|language)\n", name);
+  croak("Unknown callback: '%s'. (user|auth|language|pass)\n", name);
 }
 
 
@@ -273,6 +322,7 @@ void ExtractParentCallbacks(SV *parent, struct authensasl *sasl)
   }
   pcb = (struct _perlcontext *)malloc(count * sizeof(struct _perlcontext));
   if (pcb == NULL)  croak("Out of memory\n");
+  pcb->magic = PERLCONTEXT_MAGIC;
 
   l = (count + 1) * sizeof(sasl_callback_t);
   sasl->callbacks = (sasl_callback_t *)malloc(l);
@@ -316,6 +366,7 @@ client_new(pkg, parent, service, host, ...)
     struct authensasl *sasl;
     HV *hash;
     SV **hashval, *val;
+
 
     sasl = (struct authensasl *)malloc(sizeof(struct authensasl));
     if (sasl == NULL) croak("Out of memory\n");
@@ -402,7 +453,10 @@ client_step(sasl, instring)
     SvPV(ST(1),inlen);
 
     rc = sasl_client_step(sasl->conn, instring, inlen, NULL, &outstring, &outlen);
-    if ((rc != SASL_OK) && (rc != SASL_CONTINUE)) {
+    if (rc == SASL_OK) {
+      sasl->errormsg = "OK";
+    }
+    else if (rc != SASL_CONTINUE) {
       sasl->errormsg = "sasl_client_step failed";
       XSRETURN_UNDEF;
     }
@@ -449,10 +503,10 @@ decode(sasl, instring)
     int rc;
     unsigned int inlen, outlen=0;
 
-
     if (sasl->errormsg) {
-      XSRETURN_UNDEF;
+       XSRETURN_UNDEF;
     }
+
     instring = SvPV(ST(1),inlen);
 
     rc = sasl_decode(sasl->conn, instring, inlen, &outstring, &outlen);
@@ -509,6 +563,7 @@ callback(sasl, ...)
     if (pcb == NULL) {
       croak("Out of memory\n");
     }
+    pcb->magic = PERLCONTEXT_MAGIC;
     sasl->callbacks = (sasl_callback_t *)malloc(x);
     if (sasl->callbacks == NULL) {
       croak("Out of memory\n");
