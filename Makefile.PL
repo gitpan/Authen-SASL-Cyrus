@@ -1,9 +1,11 @@
-#!/usr/bin/env perl
-
 use ExtUtils::MakeMaker;
-
+# See lib/ExtUtils/MakeMaker.pm for details of how to influence
+# the contents of the Makefile that is written.
 WriteMakefile(
-  VERSION_FROM    => "Cyrus.pm",
-  NAME            => "Authen::SASL::Cyrus",
-  LIBS             => [ '-lsasl' ],
+    'NAME'	=> 'Authen::SASL::Cyrus',
+    'VERSION_FROM' => 'Cyrus.pm',
+#    'LIBS'	=> ['-lsasl'],
+    'LIBS'	=> ['-lsasl2'],
+    'DEFINE'	=> '-DSASL2',
+    'INC'  => '-I/usr/local/include/sasl',
 );

@@ -1,6 +1,7 @@
 /*
 # Copyright (c) 2002 Carnegie Mellon University
 # Written by Mark Adamson
+#         with SASL2 support by Leif Johansson
 #
 # C code to glue Perl SASL to Cyrus libsasl.so
 #
@@ -21,7 +22,11 @@ struct authensasl {
   char *mech;
   char *user;
   char *initstring;
+#ifdef SASL2
+  const char *errormsg;
+#else
   char *errormsg;
+#endif
 };
 
 
@@ -95,7 +100,7 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
         }
         else {
           pass->len = len;
-          strcpy(pass->data, arg1);
+          strcpy((char *)pass->data, arg1);
           *((sasl_secret_t **)arg2) = pass;
         }
         break;
@@ -164,7 +169,7 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
           }
           else {
             pass->len = len;
-            strcpy(pass->data, arg1);
+            strcpy((char *)pass->data, arg1);
             *((sasl_secret_t **)arg2) = pass;
           }
         default:
@@ -186,7 +191,10 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
 
 
 
-
+#ifdef SASL2
+#define SASL_IP_LOCAL 5
+#define SASL_IP_REMOTE 6
+#endif
 
 static
 int PropertyNumber(char *name)
@@ -194,13 +202,30 @@ int PropertyNumber(char *name)
   if (!strcasecmp(name, "user"))          return SASL_USERNAME;
   else if (!strcasecmp(name, "ssf"))      return SASL_SSF;
   else if (!strcasecmp(name, "maxout"))   return SASL_MAXOUTBUF;
-  else if (!strcasecmp(name, "realm"))    return SASL_REALM;
   else if (!strcasecmp(name, "optctx"))   return SASL_GETOPTCTX;
+#ifdef SASL2
+  else if (!strcasecmp(name, "realm"))    return SASL_DEFUSERREALM;
+  else if (!strcasecmp(name, "iplocalport"))  return SASL_IPLOCALPORT;
+  else if (!strcasecmp(name, "ipremoteport"))  return SASL_IPREMOTEPORT;
+  else if (!strcasecmp(name, "service"))  return SASL_SERVICE;
+  else if (!strcasecmp(name, "serverfqdn"))  return SASL_SERVERFQDN;
+  else if (!strcasecmp(name, "authsource"))  return SASL_AUTHSOURCE;
+  else if (!strcasecmp(name, "mechname"))  return SASL_MECHNAME;
+  else if (!strcasecmp(name, "authuser"))  return SASL_AUTHUSER;
+  else if (!strcasecmp(name, "sockname")) return SASL_IP_LOCAL;
+  else if (!strcasecmp(name, "peername")) return SASL_IP_REMOTE;
+#else
+  else if (!strcasecmp(name, "realm"))    return SASL_REALM;
   else if (!strcasecmp(name, "iplocal"))  return SASL_IP_LOCAL;
   else if (!strcasecmp(name, "sockname")) return SASL_IP_LOCAL;
   else if (!strcasecmp(name, "ipremote")) return SASL_IP_REMOTE;
   else if (!strcasecmp(name, "peername")) return SASL_IP_REMOTE;
+#endif
+#ifdef SASL2
+  croak("Unknown SASL property: '%s' (user|ssf|maxout|realm|optctx|iplocalport|ipremoteport|service|serverfqdn|authsource|mechname|authuser)\n", name);
+#else
   croak("Unknown SASL property: '%s' (user|ssf|maxout|realm|optctx|sockname|peername)\n", name);
+#endif
   return -1;
 }
 
@@ -360,7 +385,11 @@ client_new(pkg, parent, service, host, ...)
   CODE:
   {
     const char *mech=NULL;
+#ifdef SASL2
+    const char *init=NULL;
+#else
     char *init=NULL;
+#endif
     int rc;
     unsigned int initlen=0;
     struct authensasl *sasl;
@@ -399,17 +428,32 @@ client_new(pkg, parent, service, host, ...)
    }
 
     sasl_client_init(NULL);
+#ifdef SASL2
+    rc = sasl_client_new(sasl->service, sasl->server, 0, 0, sasl->callbacks, 1, &sasl->conn);
+#else
     rc = sasl_client_new(sasl->service, sasl->server, sasl->callbacks, 1, &sasl->conn);
+#endif
+
     if (rc != SASL_OK) {
+#ifdef SASL2
+      if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
+#endif
       if (!sasl->errormsg) sasl->errormsg = "sasl_client_new failed";
     }
     else {
+#ifdef SASL2
+      rc = sasl_client_start(sasl->conn, sasl->mech, NULL, &init, &initlen, &mech);
+#else
       rc = sasl_client_start(sasl->conn, sasl->mech, NULL, NULL, &init, &initlen, &mech);
+#endif
       if (rc == SASL_NOMECH) {
         if (!sasl->errormsg) 
           sasl->errormsg = "No mechanisms available (did you set all needed callbacks?)";
       }
       else if ((rc != SASL_OK) && (rc != SASL_CONTINUE)) {
+#ifdef SASL2
+        if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
+#endif
         if (!sasl->errormsg) sasl->errormsg = "sasl_client_start failed";
       }
       else {
@@ -420,6 +464,8 @@ client_new(pkg, parent, service, host, ...)
   }
   OUTPUT:
     RETVAL
+
+
 
 
 
@@ -442,7 +488,11 @@ client_step(sasl, instring)
     char *instring
   PPCODE:
   {
+#ifdef SASL2
+    const char *outstring=NULL;
+#else
     char *outstring=NULL;
+#endif
     int rc;
     unsigned int inlen, outlen=0;
 
@@ -457,7 +507,10 @@ client_step(sasl, instring)
       sasl->errormsg = "OK";
     }
     else if (rc != SASL_CONTINUE) {
-      sasl->errormsg = "sasl_client_step failed";
+#ifdef SASL2
+      if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
+#endif
+      if (!sasl->errormsg) sasl->errormsg = "sasl_client_step failed";
       XSRETURN_UNDEF;
     }
     XPUSHp(outstring, outlen);
@@ -472,7 +525,11 @@ encode(sasl, instring)
     char *instring
   PPCODE:
   {
+#ifdef SASL2
+    const char *outstring=NULL;
+#else
     char *outstring=NULL;
+#endif
     int rc;
     unsigned int inlen, outlen=0;
 
@@ -484,7 +541,10 @@ encode(sasl, instring)
 
     rc = sasl_encode(sasl->conn, instring, inlen, &outstring, &outlen);
     if (rc != SASL_OK) {
-      sasl->errormsg = "sasl_encode failed";
+#ifdef SASL2
+      if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
+#endif
+      if (!sasl->errormsg) sasl->errormsg = "sasl_encode failed";
       XSRETURN_UNDEF;
     }
     XPUSHp(outstring, outlen);
@@ -499,7 +559,11 @@ decode(sasl, instring)
     char *instring
   PPCODE:
   {
+#ifdef SASL2
+    const char *outstring=NULL;
+#else
     char *outstring=NULL;
+#endif
     int rc;
     unsigned int inlen, outlen=0;
 
@@ -511,7 +575,10 @@ decode(sasl, instring)
 
     rc = sasl_decode(sasl->conn, instring, inlen, &outstring, &outlen);
     if (rc != SASL_OK) {
-      sasl->errormsg = "sasl_decode failed";
+#ifdef SASL2
+      if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
+#endif
+      if (!sasl->errormsg) sasl->errormsg = "sasl_decode failed";
       XSRETURN_UNDEF;
     }
     XPUSHp(outstring, outlen);
@@ -595,7 +662,7 @@ char *
 error(sasl)
     struct authensasl *sasl
   CODE:
-    RETVAL = sasl->errormsg;
+    RETVAL = (char *)sasl->errormsg;
     sasl->errormsg = NULL;
   OUTPUT:
     RETVAL
@@ -671,7 +738,11 @@ property(sasl, ...)
     struct authensasl *sasl
   PPCODE:
   {
+#ifdef SASL2
+    const void *value=NULL;
+#else
     void *value=NULL;
+#endif
     char *name;
     int rc, x, propnum=-1;
     SV *prop;
@@ -693,17 +764,42 @@ property(sasl, ...)
       if (rc != SASL_OK) XSRETURN_UNDEF;
       switch(propnum){
         case SASL_USERNAME:
+#ifdef SASL2
+        case SASL_DEFUSERREALM:
+#else
         case SASL_REALM:
+#endif
           XPUSHp( (char *)value, strlen((char *)value));
           break;
         case SASL_SSF:
         case SASL_MAXOUTBUF:
           XPUSHi((int *)value);
           break;
+#ifdef SASL2
+        case SASL_IPLOCALPORT:
+	case SASL_IPREMOTEPORT:
+	  XPUSHp( (char *)value, strlen((char *)value));
+          break;
+        case SASL_IP_LOCAL:
+           propnum = SASL_IPLOCALPORT;
+           {
+            char *addr = inet_ntoa( (*(struct in_addr *)value));
+            XPUSHp( addr, strlen(addr));
+          }
+          break;
+        case SASL_IP_REMOTE:
+          propnum = SASL_IPREMOTEPORT;
+          { 
+	    char *addr = inet_ntoa( (*(struct in_addr *)value));
+            XPUSHp( addr, strlen(addr));
+          }
+          break;
+#else
         case SASL_IP_LOCAL:
         case SASL_IP_REMOTE:
           XPUSHp( (char *)value, sizeof(struct sockaddr_in));
           break;
+#endif
         default: 
           XPUSHi(-1);
       }
@@ -725,6 +821,9 @@ property(sasl, ...)
       }
       rc = sasl_setprop(sasl->conn, propnum, value);
       if (rc != SASL_OK) {
+#ifdef SASL2
+        if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
+#endif
         if (!sasl->errormsg) sasl->errormsg="sasl_setprop failed";
         RETVAL = 1;
       }
@@ -746,7 +845,9 @@ DESTROY(sasl)
     }
     if (sasl->service)   free(sasl->service);
     if (sasl->mech)      free(sasl->mech);
+#ifndef SASL2
     if (sasl->errormsg)  free(sasl->errormsg);
+#endif
     if (sasl->initstring)free(sasl->initstring);
     free(sasl);
 

@@ -1,5 +1,8 @@
 History of updates to Authen::SASL::Cyrus
 
+0.06
+Added SASL V2 support patch provided by Leif Johansson.
+
 0.05
 Added the SASL_CB_PASS callback. This callback, unfortunately, does
 not put the caller's "context" as the first parameter to the callback
