@@ -1,5 +1,19 @@
 History of updates to Authen::SASL::Cyrus
 
+0.10
+Added better callback management, Perl memory management,
+and three test scripts, as written by Ulrich Pfeifer.
+
+0.09
+Changed securesocket GLOB, as suggested by Marius Tomaschewski.
+Extended SASL2 support.
+
+0.08
+Changed the "code" routine to return the result code of the
+last SASL library call. This allows differentiation of the
+result of the client_step returning a zero byte string vs.
+it saying authentication is complete.
+
 0.07
 Memcpy fix provided by Maurice Massar
 

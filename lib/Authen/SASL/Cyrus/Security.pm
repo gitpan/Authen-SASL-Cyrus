@@ -19,6 +19,13 @@ sub TIEHANDLE {
 
 
 
+sub FETCH {
+  my($ref) = @_;
+  return($ref->{fh});
+}
+
+
+
 sub FILENO {
   my($ref) = @_;
   return(fileno($ref->{fh}));
@@ -52,20 +59,22 @@ sub READ {
     $ref->{readbuf} = "";
   }
 
-  # Read in bytes from the socket, and decrypt it
-  $rc = sysread($fh, $cryptbuf, $len);
+  # Read in bytes from the socket, and decrypt them
+  $rc = sysread($fh, $cryptbuf, ($len < 8)?8:$len);
   return($didread) if ($rc <= 0);
+  $didread = length($cryptbuf);
   $clearbuf = $ref->{conn}->decode($cryptbuf);
-  return(-1) if ($clearbuf eq undef);
+  return(-1) if (!defined $clearbuf);
 
   # It may be that more encrypted bytes are needed to decrypt an entire "block"
   # If decode() returned nothing, read in more bytes (arbitrary amounts) until
   # an entire encrypted block is available to decrypt.
   while ($clearbuf eq "") {
-    $rc = sysread($fh, $cryptbuf, 8);
-    return($rc) if ($rc <= 0);
+    $rc = sysread($fh, $cryptbuf, 8, $didread);
+    last if ($rc < 8);
+    $didread += $rc;
     $clearbuf = $ref->{conn}->decode($cryptbuf);
-    return(-1) if ($clearbuf eq undef);
+    return(-1) if (!defined $clearbuf);
   }
 
   # Copy what was asked for, stash the rest
@@ -88,6 +97,16 @@ sub WRITE {
   $clearbuf = substr($string, 0, $len);
   $cryptbuf = $ref->{conn}->encode($clearbuf);
   print $fh $cryptbuf;
+}
+
+
+
+
+# Forward close to the tied handle
+sub CLOSE {
+  my($ref) = @_;
+  close($ref->{fh});
+  $ref->{fh} = undef;
 }
 
 

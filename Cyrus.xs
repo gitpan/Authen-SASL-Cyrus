@@ -1,7 +1,8 @@
 /*
 # Copyright (c) 2002 Carnegie Mellon University
 # Written by Mark Adamson
-#         with SASL2 support by Leif Johansson
+#    with SASL2 support by Leif Johansson
+#    with better mem management and callbacks by Ulrich Pfeifer
 #
 # C code to glue Perl SASL to Cyrus libsasl.so
 #
@@ -13,6 +14,34 @@
 #include <sasl.h>
 
 
+#ifdef SASL2
+#define SASLCONST const
+#define SASL_ERR(x)  sasl_errdetail(sasl->conn)
+#else
+#define SASLCONST
+#define SASL_ERR(x)  x
+#endif
+
+
+
+/* Ulrich Pfeifer: Poor man's XPUSH macros for ancient perls. Note that the
+   stack is extended by a constant 1.  That is OK for the uses below, but
+   insufficient in general */
+
+#ifndef dXSTARG
+#undef XPUSHi
+#undef XPUSHp
+#define  XPUSHi(A) \
+EXTEND(sp,1); \
+PUSHs(sv_2mortal(newSViv(A)));
+#define XPUSHp(A,B) \
+EXTEND(sp,1); \
+PUSHs(sv_2mortal(newSVpvn((char *)(A),(STRLEN)(B))));
+#endif
+#ifndef SvPV_nolen
+#define SvPV_nolen(A) SvPV(A,PL_na)
+#endif
+
 
 struct authensasl {
   sasl_conn_t *conn;
@@ -23,12 +52,12 @@ struct authensasl {
   char *user;
   char *initstring;
   int   initstringlen;
-#ifdef SASL2
-  const char *errormsg;
-#else
-  char *errormsg;
-#endif
+  SASLCONST char *errormsg;
+  int code;
 };
+
+
+
 
 
 /* A unique looking number to help PerlCallback() determine which parameter is
@@ -45,12 +74,45 @@ struct _perlcontext {
 
 
 
+void free_callbacks(struct authensasl *sasl)
+{
+  if (sasl->callbacks) {
+    Safefree(sasl->callbacks);
+    Safefree(sasl->callbacks->context);
+    sasl->callbacks = NULL;
+  }
+}
+
+
+
+struct _perlcontext *
+alloc_callbacks(struct authensasl *sasl, int count)
+{
+  struct _perlcontext *pcb;
+  int i;
+
+
+  Newz(23, pcb, count, struct _perlcontext);
+  if (pcb == NULL) {croak("Out of memory\n");}
+
+  for (i=0; i<count; i++) {
+    pcb[i].magic = PERLCONTEXT_MAGIC;
+  }
+
+  Newz(23, sasl->callbacks, count+1, sasl_callback_t);
+  if (sasl->callbacks == NULL) {croak("Out of memory\n");}
+
+  return(pcb);
+}
+
+
+
 /*
    This is the wrapper function that calls Perl callback functions. The SASL
    library needs a C function to handle callbacks, and this function forms the
    glue to get from the C library back into Perl. The perlcontext is a wrapper
-   around the context given to the "callbacks" method. It tells which Perl 
-   function should be called and what parameter to pass it. 
+   around the context given to the "callbacks" method. It tells which Perl
+   function should be called and what parameter to pass it.
    Different types of callbacks have different "output" parameters to give data
    back to the C library. This function needs to know how to take information
    returned from the Perl callback subroutine and load it back into the output
@@ -71,18 +133,17 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
   SV *rsv;
 
 
-
   cp = (struct _perlcontext *)perlcontext;
 
-  /* For SASL_CB_PASS, the context is in the SECOND param
+  /* For SASL_CB_PASS, the context is in the SECOND param */
   if ((cp == NULL) || (cp->magic != PERLCONTEXT_MAGIC)) {
     cp = (struct _perlcontext *)arg1;
+    Perl_warn("Authen::SASL::Cyrus: PerlCallback called with bad context\n");
   }
-  */
 
   /* If there is no function to call, just return the "parameter" */
   if (cp->func == NULL) {
-    
+
     switch(cp->id) {
       case SASL_CB_USER:
       case SASL_CB_AUTHNAME:
@@ -95,13 +156,13 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
         break;
       case SASL_CB_PASS:
         arg1 = SvPV(cp->param, len);
-        pass = (sasl_secret_t *)malloc(len+sizeof(sasl_secret_t));
+        Newc(23, pass, len+sizeof(sasl_secret_t), char, sasl_secret_t);
         if (pass == NULL) {
           rc = -1;
         }
         else {
           pass->len = len;
-          strcpy((char *)pass->data, arg1);
+          Copy(arg1, (char *)pass->data, len, char);
           *((sasl_secret_t **)arg2) = pass;
         }
         break;
@@ -130,11 +191,11 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
         /* No additional parameters to load */
         break;
       default:
-        printf("Authen::SASL::Cyrus:  Don't know how to instate args for callback %d\n", cp->id);
+        Perl_warn("Authen::SASL::Cyrus:  Don't know how to instate args for callback %d\n", cp->id);
     }
     PUTBACK;
 
-    count = call_sv(cp->func, G_SCALAR);
+    count = perl_call_sv(cp->func, G_SCALAR);
 
     /* Refresh the local stack in case the function played with it */
     SPAGAIN;
@@ -150,10 +211,8 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
         case SASL_CB_LANGUAGE:
           rsv = POPs;
           arg0 = SvPV(rsv, len);
-          c = (char *)malloc(len+1);
+          c = Perl_savepvn(arg0, len);
           if (c) {
-            strncpy(c, arg0, len);
-            c[len] = '\0';
             if (arg2) *((unsigned *)arg2) = len;
             *((char **)arg1) = c;
           }
@@ -164,13 +223,13 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
         case SASL_CB_PASS:
           rsv = POPs;
           arg1 = SvPV(rsv, len);
-          pass = (sasl_secret_t *)malloc(len+sizeof(sasl_secret_t));
+          Newc(23, pass, len+sizeof(sasl_secret_t), char, sasl_secret_t);
           if (pass == NULL) {
             rc = -1;
           }
           else {
             pass->len = len;
-            strcpy((char *)pass->data, arg1);
+            Copy(arg1, (char *)pass->data, len, char);
             *((sasl_secret_t **)arg2) = pass;
           }
         default:
@@ -192,10 +251,15 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
 
 
 
-#ifdef SASL2
-#define SASL_IP_LOCAL 5
-#define SASL_IP_REMOTE 6
-#endif
+int PerlPassCallback(sasl_conn_t *conn, void *perlcontext,
+                     int id, sasl_secret_t **psecret)
+{
+  return(PerlCallback(perlcontext, NULL, NULL, (char *)psecret));
+}
+
+
+
+
 
 static
 int PropertyNumber(char *name)
@@ -207,14 +271,12 @@ int PropertyNumber(char *name)
 #ifdef SASL2
   else if (!strcasecmp(name, "realm"))    return SASL_DEFUSERREALM;
   else if (!strcasecmp(name, "iplocalport"))  return SASL_IPLOCALPORT;
-  else if (!strcasecmp(name, "ipremoteport"))  return SASL_IPREMOTEPORT;
+  else if (!strcasecmp(name, "ipremoteport")) return SASL_IPREMOTEPORT;
   else if (!strcasecmp(name, "service"))  return SASL_SERVICE;
   else if (!strcasecmp(name, "serverfqdn"))  return SASL_SERVERFQDN;
   else if (!strcasecmp(name, "authsource"))  return SASL_AUTHSOURCE;
   else if (!strcasecmp(name, "mechname"))  return SASL_MECHNAME;
   else if (!strcasecmp(name, "authuser"))  return SASL_AUTHUSER;
-  else if (!strcasecmp(name, "sockname")) return SASL_IP_LOCAL;
-  else if (!strcasecmp(name, "peername")) return SASL_IP_REMOTE;
 #else
   else if (!strcasecmp(name, "realm"))    return SASL_REALM;
   else if (!strcasecmp(name, "iplocal"))  return SASL_IP_LOCAL;
@@ -270,23 +332,23 @@ void AddCallback(
   if (SvROK(action)) {     /*   user =>  <ref>  */
     action = SvRV(action);
 
-    if (SvTYPE(action) == SVt_PVCV) {   /* user => sub { },  user => \&func */
+    if (SvTYPE(action) & SVt_PVCV) {   /* user => sub { },  user => \&func */
       pcb->func = action;
       pcb->param = NULL;
     }
 
-    else if (SvTYPE(action) == SVt_PVAV) {   /* user => [ \&func, $param ] */
+    else if (SvTYPE(action) & SVt_PVAV) {   /* user => [ \&func, $param ] */
       pcb->func = av_shift((AV *)action);
       pcb->param = av_shift((AV *)action);
     }
     else
       croak("Unknown reference parameter to %s callback.\n", name);
   }
-  else if (SvTYPE(action) == SVt_PV) {   /*  user => $param */
+  else if (SvTYPE(action) & SVt_PV) {   /*  user => $param */
     pcb->func = NULL;
     pcb->param = action;
   }
-  else if (SvTYPE(action) == SVt_IV) {   /*  user => 1 */
+  else if (SvTYPE(action) & SVt_IV) {   /*  user => 1 */
     pcb->func = NULL;
     pcb->param = NULL;
     pcb->intparam = SvIV(action);
@@ -297,6 +359,12 @@ void AddCallback(
   /* Write the C SASL callback */
   cb->id = pcb->id;
   cb->proc = PerlCallback;
+  if (cb->id == SASL_CB_PASS) {
+    cb->proc = PerlPassCallback;
+  }
+  else {
+    cb->proc = PerlCallback;
+  }
   cb->context = pcb;
 }
 
@@ -342,19 +410,8 @@ void ExtractParentCallbacks(SV *parent, struct authensasl *sasl)
   for (iter=hv_iternext(hash);  iter;  iter=hv_iternext(hash)) count++;
 
   /* Allocate space for the callbacks */
-  if (sasl->callbacks) {
-    free(sasl->callbacks->context);
-    free(sasl->callbacks);
-  }
-  pcb = (struct _perlcontext *)malloc(count * sizeof(struct _perlcontext));
-  if (pcb == NULL)  croak("Out of memory\n");
-  pcb->magic = PERLCONTEXT_MAGIC;
-
-  l = (count + 1) * sizeof(sasl_callback_t);
-  sasl->callbacks = (sasl_callback_t *)malloc(l);
-  if (sasl->callbacks == NULL) croak("Out of memory\n");
-  memset(sasl->callbacks, 0, l);
-
+  free_callbacks(sasl);
+  pcb = alloc_callbacks(sasl, count);
 
   /* Run through all of parent's callback types, fill in the sasl->callbacks */
   hv_iterinit(hash);
@@ -364,7 +421,7 @@ void ExtractParentCallbacks(SV *parent, struct authensasl *sasl)
     AddCallback(key, val, &pcb[count], &sasl->callbacks[count]);
   }
   sasl->callbacks[count].id = SASL_CB_LIST_END;
-  sasl->callbacks[count].context = pcb;
+  sasl->callbacks[count].context = NULL;
 
   return;
 }
@@ -373,7 +430,6 @@ void ExtractParentCallbacks(SV *parent, struct authensasl *sasl)
 
 
 MODULE=Authen::SASL::Cyrus      PACKAGE=Authen::SASL::Cyrus
-
 
 
 
@@ -386,34 +442,28 @@ client_new(pkg, parent, service, host, ...)
   CODE:
   {
     const char *mech=NULL;
-#ifdef SASL2
-    const char *init=NULL;
-#else
-    char *init=NULL;
-#endif
-    int rc;
+    SASLCONST char *init=NULL;
     unsigned int initlen=0;
     struct authensasl *sasl;
     HV *hash;
     SV **hashval, *val;
-   sasl_security_properties_t  ssp;
+    sasl_security_properties_t  ssp;
 
 
-    sasl = (struct authensasl *)malloc(sizeof(struct authensasl));
+    sasl = Newz(23, sasl, 1, struct authensasl);
     if (sasl == NULL) croak("Out of memory\n");
-    memset(sasl, 0, sizeof(struct authensasl));
 
     if (!host || !*host) {
       if (!sasl->errormsg) sasl->errormsg = "Need a 'hostname' in client_new()";
     }
     else
-      sasl->server = strdup(host);
+      sasl->server = savepv(host);
 
     if (!service || !*service) {
       if (!sasl->errormsg) sasl->errormsg = "Need a 'service' name in client_new()";
     }
     else
-      sasl->service = strdup(service);
+      sasl->service = savepv(service);
 
 
     /* Extract callback info from the parent object */
@@ -424,41 +474,33 @@ client_new(pkg, parent, service, host, ...)
      hash = (HV *)SvRV(parent);
      hashval = hv_fetch(hash, "mechanism", 9, 0);
      if (hashval  && *hashval && SvTYPE(*hashval) == SVt_PV) {
-       if (sasl->mech) free(sasl->mech);
-       sasl->mech = strdup(SvPV_nolen(*hashval));
+       if (sasl->mech) Safefree(sasl->mech);
+       sasl->mech = Perl_savepv(SvPV_nolen(*hashval));
      }
    }
 
     sasl_client_init(NULL);
 #ifdef SASL2
-    rc = sasl_client_new(sasl->service, sasl->server, 0, 0, sasl->callbacks, 1, &sasl->conn);
+    sasl->code = sasl_client_new(sasl->service, sasl->server, 0, 0, sasl->callbacks, 1, &sasl->conn);
 #else
-    rc = sasl_client_new(sasl->service, sasl->server, sasl->callbacks, 1, &sasl->conn);
+    sasl->code = sasl_client_new(sasl->service, sasl->server, sasl->callbacks, 1, &sasl->conn);
 #endif
 
-    if (rc != SASL_OK) {
-#ifdef SASL2
-      if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
-#else
-      if (!sasl->errormsg) sasl->errormsg = "sasl_client_new failed";
-#endif
+    if (sasl->code != SASL_OK) {
+      if (!sasl->errormsg) sasl->errormsg = SASL_ERR("sasl_client_new failed");
     }
     else {
 #ifdef SASL2
-      rc = sasl_client_start(sasl->conn, sasl->mech, NULL, &init, &initlen, &mech);
+      sasl->code = sasl_client_start(sasl->conn, sasl->mech, NULL, &init, &initlen, &mech);
 #else
-      rc = sasl_client_start(sasl->conn, sasl->mech, NULL, NULL, &init, &initlen, &mech);
+      sasl->code = sasl_client_start(sasl->conn, sasl->mech, NULL, NULL, &init, &initlen, &mech);
 #endif
-      if (rc == SASL_NOMECH) {
-        if (!sasl->errormsg) 
+      if (sasl->code == SASL_NOMECH) {
+        if (!sasl->errormsg)
           sasl->errormsg = "No mechanisms available (did you set all needed callbacks?)";
       }
-      else if ((rc != SASL_OK) && (rc != SASL_CONTINUE)) {
-#ifdef SASL2
-        if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
-#else
-        if (!sasl->errormsg) sasl->errormsg = "sasl_client_start failed";
-#endif
+      else if ((sasl->code != SASL_OK) && (sasl->code != SASL_CONTINUE)) {
+        if (!sasl->errormsg) sasl->errormsg = SASL_ERR("sasl_client_start failed");
       }
       else {
 #ifdef SASL2
@@ -467,14 +509,15 @@ client_new(pkg, parent, service, host, ...)
         ssp.max_ssf = 0xFF;
         sasl_setprop(sasl->conn, SASL_SEC_PROPS, &ssp);
 #endif
-        if (init) { 
+        if (init) {
           sasl->initstring = malloc(initlen);
           if (sasl->initstring) {
             memcpy(sasl->initstring, init, initlen);
             sasl->initstringlen = initlen;
           }
           else {
-            if (!sasl->errormsg) sasl->errormsg = "Need a 'hostname' in client_new()";
+            sasl->code = SASL_FAIL;
+            if (!sasl->errormsg) sasl->errormsg = "Out of memory in client_new()";
             sasl->initstringlen = 0;
           }
         }
@@ -508,29 +551,20 @@ client_step(sasl, instring)
     char *instring
   PPCODE:
   {
-#ifdef SASL2
-    const char *outstring=NULL;
-#else
-    char *outstring=NULL;
-#endif
-    int rc;
+    SASLCONST char *outstring=NULL;
     unsigned int inlen, outlen=0;
 
     if (sasl->errormsg) {
-      XSRETURN_UNDEF;
+      XSRETURN_EMPTY;
     }
     SvPV(ST(1),inlen);
-    rc = sasl_client_step(sasl->conn, instring, inlen, NULL, &outstring, &outlen);
-    if (rc == SASL_OK) {
+    sasl->code = sasl_client_step(sasl->conn, instring, inlen, NULL, &outstring, &outlen);
+    if (sasl->code == SASL_OK) {
       sasl->errormsg = NULL;
     }
-    else if (rc != SASL_CONTINUE) {
-#ifdef SASL2
-      if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
-#else
-      if (!sasl->errormsg) sasl->errormsg = "sasl_client_step failed";
-#endif
-      XSRETURN_UNDEF;
+    else if (sasl->code != SASL_CONTINUE) {
+      if (!sasl->errormsg) sasl->errormsg = SASL_ERR("sasl_client_step failed");
+      XSRETURN_EMPTY;
     }
     XPUSHp(outstring, outlen);
   }
@@ -544,12 +578,7 @@ encode(sasl, instring)
     char *instring
   PPCODE:
   {
-#ifdef SASL2
-    const char *outstring=NULL;
-#else
-    char *outstring=NULL;
-#endif
-    int rc;
+    SASLCONST char *outstring=NULL;
     unsigned int inlen, outlen=0;
 
 
@@ -558,13 +587,9 @@ encode(sasl, instring)
     }
     instring = SvPV(ST(1),inlen);
 
-    rc = sasl_encode(sasl->conn, instring, inlen, &outstring, &outlen);
-    if (rc != SASL_OK) {
-#ifdef SASL2
-      if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
-#else
-      if (!sasl->errormsg) sasl->errormsg = "sasl_encode failed";
-#endif
+    sasl->code = sasl_encode(sasl->conn, instring, inlen, &outstring, &outlen);
+    if (sasl->code != SASL_OK) {
+      if (!sasl->errormsg) sasl->errormsg = SASL_ERR("sasl_encode failed");
       XSRETURN_UNDEF;
     }
     XPUSHp(outstring, outlen);
@@ -579,28 +604,18 @@ decode(sasl, instring)
     char *instring
   PPCODE:
   {
-#ifdef SASL2
-    const char *outstring=NULL;
-#else
-    char *outstring=NULL;
-#endif
-    int rc;
+    SASLCONST char *outstring=NULL;
     unsigned int inlen, outlen=0;
+
 
     if (sasl->errormsg) {
        XSRETURN_UNDEF;
     }
 
     instring = SvPV(ST(1),inlen);
-
-    rc = sasl_decode(sasl->conn, instring, inlen, &outstring, &outlen);
-    if (rc != SASL_OK) {
-#ifdef SASL2
-      if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
-#else
-      if (!sasl->errormsg) sasl->errormsg = "sasl_decode failed";
-#endif
-
+    sasl->code = sasl_decode(sasl->conn, instring, inlen, &outstring, &outlen);
+    if (sasl->code != SASL_OK) {
+      if (!sasl->errormsg) sasl->errormsg = SASL_ERR("sasl_decode failed");
       XSRETURN_UNDEF;
     }
     XPUSHp(outstring, outlen);
@@ -636,44 +651,44 @@ callback(sasl, ...)
           }
         }
       }
-      ST(0) = sv_newmortal();
-      sv_setiv(ST(0), (int)RETVAL);
-      XSRETURN(1);
     }
+    else {
+      /* Prepare space for the callback list */
+      free_callbacks(sasl);
+      count = (items - 1) / 2;
+      pcb = alloc_callbacks(sasl, count);
 
-    /* Prepare space for the callback list */
-    if (sasl->callbacks) {
-      free(sasl->callbacks->context);
-      free(sasl->callbacks);
-    }
-    count = (items - 1) / 2;
-    x = (count + 1) * sizeof(sasl_callback_t);
-    pcb = (struct _perlcontext *)malloc(count * sizeof(struct _perlcontext));
-    if (pcb == NULL) {
-      croak("Out of memory\n");
-    }
-    pcb->magic = PERLCONTEXT_MAGIC;
-    sasl->callbacks = (sasl_callback_t *)malloc(x);
-    if (sasl->callbacks == NULL) {
-      croak("Out of memory\n");
-    }
-    memset(sasl->callbacks, 0, x);
-
-    /* Fill in the callbacks */
-    for(x=0; x<count; x++) {
-      /* Convert the callback name into a SASL ID number */
-      if (SvTYPE(ST(1+x*2)) != SVt_PV) {
-        croak("callbacks: Unknown key given in position %d\n", x);
+      /* Fill in the callbacks */
+      for(x=0; x<count; x++) {
+        /* Convert the callback name into a SASL ID number */
+        if (SvTYPE(ST(1+x*2)) != SVt_PV) {
+          croak("callbacks: Unknown key given in position %d\n", x);
+        }
+        name = SvPV_nolen(ST(1+x*2));
+        action = ST(2+x*2);
+        AddCallback(name, action, &pcb[x], &sasl->callbacks[x]);
       }
-      name = SvPV_nolen(ST(1+x*2));
-      action = ST(2+x*2);
-      AddCallback(name, action, &pcb[x], &sasl->callbacks[x]);
-    }
-    sasl->callbacks[count].id = SASL_CB_LIST_END;
-    sasl->callbacks[count].context = pcb;
+      sasl->callbacks[count].id = SASL_CB_LIST_END;
+      sasl->callbacks[count].context = NULL;
 
-    RETVAL = count;
+      RETVAL = count;
+    }
   }
+  OUTPUT:
+    RETVAL
+
+
+
+
+int
+saslversion(sasl)
+    struct authensasl *sasl
+  CODE:
+#ifdef SASL2
+    RETVAL=2;
+#else
+    RETVAL=1;
+#endif
   OUTPUT:
     RETVAL
 
@@ -695,11 +710,23 @@ int
 code(sasl)
     struct authensasl *sasl
   CODE:
-    if (sasl->errormsg) RETVAL=1;
-    else RETVAL=0;
+    RETVAL=sasl->code;
   OUTPUT:
     RETVAL
 
+
+SV *
+diag(sasl)
+    struct authensasl *sasl
+  CODE:
+    if (sasl->errormsg) {
+      RETVAL = sv_2mortal(newSVpv((char *)sasl->errormsg, 0));
+    }
+    else {
+      RETVAL = &PL_sv_undef;
+    }
+  OUTPUT:
+    RETVAL
 
 
 char *
@@ -717,8 +744,8 @@ host(sasl, ...)
     struct authensasl *sasl
   CODE:
     if (items > 1) {
-      if (sasl->server) free(sasl->server);
-      sasl->server = strdup(SvPV_nolen(ST(1)));
+      if (sasl->server) Safefree(sasl->server);
+      sasl->server = savepv(SvPV_nolen(ST(1)));
     }
     RETVAL = sasl->server;
   OUTPUT:
@@ -731,8 +758,8 @@ user(sasl, ...)
     struct authensasl *sasl
   CODE:
     if (items > 1) {
-      if (sasl->user) free(sasl->user);
-      sasl->user = strdup(SvPV_nolen(ST(1)));
+      if (sasl->user) Safefree(sasl->user);
+      sasl->user = savepv(SvPV_nolen(ST(1)));
     }
     RETVAL = sasl->user;
   OUTPUT:
@@ -745,8 +772,8 @@ service(sasl, ...)
     struct authensasl *sasl
   CODE:
     if (items > 1) {
-      if (sasl->service) free(sasl->service);
-      sasl->service = strdup(SvPV_nolen(ST(1)));
+      if (sasl->service) Safefree(sasl->service);
+      sasl->service = savepv(SvPV_nolen(ST(1)));
     }
     RETVAL = sasl->service;
   OUTPUT:
@@ -760,13 +787,9 @@ property(sasl, ...)
     struct authensasl *sasl
   PPCODE:
   {
-#ifdef SASL2
-    const void *value=NULL;
-#else
-    void *value=NULL;
-#endif
+    SASLCONST void *value=NULL;
     char *name;
-    int rc, x, propnum=-1;
+    int x, propnum=-1;
     SV *prop;
 
 
@@ -782,8 +805,8 @@ property(sasl, ...)
     if (items == 2) {
       name = SvPV_nolen(ST(1));
       propnum = PropertyNumber(name);
-      rc = sasl_getprop(sasl->conn, propnum, &value);
-      if (rc != SASL_OK) XSRETURN_UNDEF;
+      sasl->code = sasl_getprop(sasl->conn, propnum, &value);
+      if (sasl->code != SASL_OK) XSRETURN_UNDEF;
       switch(propnum){
         case SASL_USERNAME:
 #ifdef SASL2
@@ -795,26 +818,12 @@ property(sasl, ...)
           break;
         case SASL_SSF:
         case SASL_MAXOUTBUF:
-          XPUSHi((int *)value);
+          XPUSHi(*(int *)value);
           break;
 #ifdef SASL2
         case SASL_IPLOCALPORT:
         case SASL_IPREMOTEPORT:
           XPUSHp( (char *)value, strlen((char *)value));
-          break;
-        case SASL_IP_LOCAL:
-           propnum = SASL_IPLOCALPORT;
-           {
-            char *addr = inet_ntoa( (*(struct in_addr *)value));
-            XPUSHp( addr, strlen(addr));
-          }
-          break;
-        case SASL_IP_REMOTE:
-          propnum = SASL_IPREMOTEPORT;
-          { 
-            char *addr = inet_ntoa( (*(struct in_addr *)value));
-            XPUSHp( addr, strlen(addr));
-          }
           break;
 #else
         case SASL_IP_LOCAL:
@@ -822,7 +831,7 @@ property(sasl, ...)
           XPUSHp( (char *)value, sizeof(struct sockaddr_in));
           break;
 #endif
-        default: 
+        default:
           XPUSHi(-1);
       }
       XSRETURN(1);
@@ -841,17 +850,9 @@ property(sasl, ...)
         name = SvPV_nolen(prop);
         propnum = PropertyNumber(name);
       }
-#ifdef SASL2
-      if ((propnum == SASL_IP_LOCAL) || (propnum == SASL_IP_REMOTE)) rc = 0;
-      else
-#endif
-      rc = sasl_setprop(sasl->conn, propnum, value);
-      if (rc != SASL_OK) {
-#ifdef SASL2
-        if (!sasl->errormsg) sasl->errormsg = sasl_errdetail(sasl->conn);
-#else
-        if (!sasl->errormsg) sasl->errormsg = "sasl_setprop failed";
-#endif
+      sasl->code = sasl_setprop(sasl->conn, propnum, value);
+      if (sasl->code != SASL_OK) {
+        if (!sasl->errormsg) sasl->errormsg = SASL_ERR("sasl_setprop failed");
         RETVAL = 1;
       }
     }
@@ -866,16 +867,13 @@ DESTROY(sasl)
     struct authensasl *sasl
   CODE:
     if (sasl->conn)  sasl_dispose(&sasl->conn);
-    if (sasl->callbacks) {
-      free(sasl->callbacks->context);
-      free(sasl->callbacks);
-    }
-    if (sasl->service)   free(sasl->service);
-    if (sasl->mech)      free(sasl->mech);
+    free_callbacks(sasl);
+    if (sasl->service)   Safefree(sasl->service);
+    if (sasl->mech)      Safefree(sasl->mech);
 #ifndef SASL2
-    if (sasl->errormsg)  free(sasl->errormsg);
+    if (sasl->errormsg)  Safefree(sasl->errormsg);
 #endif
-    if (sasl->initstring)free(sasl->initstring);
-    free(sasl);
+    if (sasl->initstring)Safefree(sasl->initstring);
+    Safefree(sasl);
 
 

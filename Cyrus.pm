@@ -2,7 +2,7 @@ package Authen::SASL::Cyrus;
 require DynaLoader;
 require Authen::SASL::Cyrus::Security;
 @ISA = qw(DynaLoader);
-$VERSION = "0.07";
+$VERSION = "0.10";
 bootstrap Authen::SASL::Cyrus $VERSION;
 
 
@@ -23,9 +23,9 @@ sub tiesocket {
 # perform SASL encryption and decryption on the network traffic
 sub securesocket {
   my ($sasl, $fh) = @_;
-  local *GLOB;
-  tie(*GLOB, "Authen::SASL::Cyrus::Security", $fh, $sasl);
-  \*GLOB;
+  my $glob = \do { local *GLOB; };
+  tie(*$glob, "Authen::SASL::Cyrus::Security", $fh, $sasl);
+  $glob;
 }
 
 
