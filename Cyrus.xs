@@ -8,10 +8,13 @@
 #
 */
 
+#define PERL_NO_GET_CONTEXT
 #include <EXTERN.h>
 #include <perl.h>
 #include <XSUB.h>
-#include <sasl.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sasl/sasl.h>
 
 
 #ifdef SASL2
@@ -22,6 +25,12 @@
 #define SASL_ERR(x)  x
 #endif
 
+#ifndef SASL_IP_LOCAL
+#define SASL_IP_LOCAL 5
+#endif
+#ifndef SASL_IP_REMOTE
+#define SASL_IP_REMOTE 6
+#endif
 
 
 /* Ulrich Pfeifer: Poor man's XPUSH macros for ancient perls. Note that the
@@ -88,6 +97,7 @@ void free_callbacks(struct authensasl *sasl)
 struct _perlcontext *
 alloc_callbacks(struct authensasl *sasl, int count)
 {
+  dTHX;
   struct _perlcontext *pcb;
   int i;
 
@@ -125,6 +135,7 @@ alloc_callbacks(struct authensasl *sasl, int count)
 
 int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
 {
+  dTHX;
   char *c;
   int i, intparam, count, rc=0;
   unsigned int len=0;
@@ -138,7 +149,7 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
   /* For SASL_CB_PASS, the context is in the SECOND param */
   if ((cp == NULL) || (cp->magic != PERLCONTEXT_MAGIC)) {
     cp = (struct _perlcontext *)arg1;
-    Perl_warn("Authen::SASL::Cyrus: PerlCallback called with bad context\n");
+    warn("Authen::SASL::Cyrus: PerlCallback called with bad context\n");
   }
 
   /* If there is no function to call, just return the "parameter" */
@@ -191,11 +202,11 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
         /* No additional parameters to load */
         break;
       default:
-        Perl_warn("Authen::SASL::Cyrus:  Don't know how to instate args for callback %d\n", cp->id);
+        warn("Authen::SASL::Cyrus:  Don't know how to instate args for callback %d\n", cp->id);
     }
     PUTBACK;
 
-    count = perl_call_sv(cp->func, G_SCALAR);
+    count = call_sv(cp->func, G_SCALAR);
 
     /* Refresh the local stack in case the function played with it */
     SPAGAIN;
@@ -211,7 +222,7 @@ int PerlCallback(void *perlcontext, char *arg0, char *arg1, char *arg2)
         case SASL_CB_LANGUAGE:
           rsv = POPs;
           arg0 = SvPV(rsv, len);
-          c = Perl_savepvn(arg0, len);
+          c = savepvn(arg0, len);
           if (c) {
             if (arg2) *((unsigned *)arg2) = len;
             *((char **)arg1) = c;
@@ -264,28 +275,36 @@ int PerlPassCallback(sasl_conn_t *conn, void *perlcontext,
 static
 int PropertyNumber(char *name)
 {
+  dTHX;
+
   if (!strcasecmp(name, "user"))          return SASL_USERNAME;
   else if (!strcasecmp(name, "ssf"))      return SASL_SSF;
   else if (!strcasecmp(name, "maxout"))   return SASL_MAXOUTBUF;
   else if (!strcasecmp(name, "optctx"))   return SASL_GETOPTCTX;
 #ifdef SASL2
   else if (!strcasecmp(name, "realm"))    return SASL_DEFUSERREALM;
-  else if (!strcasecmp(name, "iplocalport"))  return SASL_IPLOCALPORT;
-  else if (!strcasecmp(name, "ipremoteport")) return SASL_IPREMOTEPORT;
   else if (!strcasecmp(name, "service"))  return SASL_SERVICE;
   else if (!strcasecmp(name, "serverfqdn"))  return SASL_SERVERFQDN;
   else if (!strcasecmp(name, "authsource"))  return SASL_AUTHSOURCE;
   else if (!strcasecmp(name, "mechname"))  return SASL_MECHNAME;
   else if (!strcasecmp(name, "authuser"))  return SASL_AUTHUSER;
+  else if (!strcasecmp(name, "iplocalport"))  return SASL_IPLOCALPORT;
+  else if (!strcasecmp(name, "ipremoteport")) return SASL_IPREMOTEPORT;
+  else if (!strcasecmp(name, "sockname")) return SASL_IPLOCALPORT;
+  else if (!strcasecmp(name, "peername")) return SASL_IPREMOTEPORT;
+  else if (!strcasecmp(name, "iplocal"))  return SASL_IPLOCALPORT;
+  else if (!strcasecmp(name, "ipremote")) return SASL_IPREMOTEPORT;
 #else
   else if (!strcasecmp(name, "realm"))    return SASL_REALM;
-  else if (!strcasecmp(name, "iplocal"))  return SASL_IP_LOCAL;
+  else if (!strcasecmp(name, "iplocalport"))  return SASL_IP_LOCAL;
+  else if (!strcasecmp(name, "ipremoteport")) return SASL_IP_REMOTE;
   else if (!strcasecmp(name, "sockname")) return SASL_IP_LOCAL;
-  else if (!strcasecmp(name, "ipremote")) return SASL_IP_REMOTE;
   else if (!strcasecmp(name, "peername")) return SASL_IP_REMOTE;
+  else if (!strcasecmp(name, "iplocal"))  return SASL_IP_LOCAL;
+  else if (!strcasecmp(name, "ipremote")) return SASL_IP_REMOTE;
 #endif
 #ifdef SASL2
-  croak("Unknown SASL property: '%s' (user|ssf|maxout|realm|optctx|iplocalport|ipremoteport|service|serverfqdn|authsource|mechname|authuser)\n", name);
+  croak("Unknown SASL property: '%s' (user|ssf|maxout|realm|optctx|iplocalport|sockname|ipremoteport|peername|service|serverfqdn|authsource|mechname|authuser)\n", name);
 #else
   croak("Unknown SASL property: '%s' (user|ssf|maxout|realm|optctx|sockname|peername)\n", name);
 #endif
@@ -294,11 +313,71 @@ int PropertyNumber(char *name)
 
 
 
+/* Convert a SASL IP address from that given by the user to the library format */
+static
+void  SASLIPuser2lib(char *buf, char *value, int valuelen)
+{
+  char *c;
+  int i, dotcount=0, semicolon=0, isv2=0, ip[5]={0,0,0,0,0};
+  struct sockaddr_in *saddr;
+  struct in_addr addr;
+
+  /* See if the *value is in V2 "IP1.IP2.IP3.IP4;PORT" format, or
+     in V1 "struct sockaddr" format */
+  for (i=0; i<valuelen; i++) {
+    if (value[i] == '.') {
+      dotcount++;
+      if (dotcount >= 4) {
+        isv2=0;
+        break;
+      }
+    }
+    else if ((value[i] == ';') && (dotcount == 3)) {
+      semicolon = 1;
+      isv2 = 1;
+    }
+    else if ((value[i] >= '0') && (value[i] <= '9')) {
+      ip[dotcount+semicolon] = ip[dotcount+semicolon]*10 + (value[i] - '0');
+      if ((semicolon == 0) && (ip[dotcount] >= 256)) {
+        break;
+      }
+    }
+    else {
+      isv2=0;
+      break;
+    }
+  }
+
+  if (isv2) {
+#ifdef SASL2
+    strcpy(buf, value);
+#else
+    saddr = (struct sockaddr_in *)buf;
+    saddr->sin_port = ip[4];
+    saddr->sin_addr.s_addr = (ip[0] << 24) | (ip[1] << 16) | (ip[2] << 8) | ip[3];
+#endif
+  }
+  else {
+#ifdef SASL2
+    saddr=(struct sockaddr_in *)value;
+    memcpy(&addr, &saddr->sin_addr, sizeof(addr));
+    c = inet_ntoa(addr);
+    sprintf(buf, "%s;%d", c, saddr->sin_port);
+#else
+    memcpy(buf, value, sizeof(struct sockaddr_in));
+#endif
+  }
+}
+
+
+
+
 
 /* Convert a Perl callback name into a C callback ID */
 static
 int CallbackNumber(char *name)
 {
+  dTHX;
   if (!strcasecmp(name, "user"))          return(SASL_CB_USER);
   else if (!strcasecmp(name, "auth"))     return(SASL_CB_AUTHNAME);
   else if (!strcasecmp(name, "language")) return(SASL_CB_LANGUAGE);
@@ -327,17 +406,19 @@ void AddCallback(
   sasl_callback_t *cb
   )
 {
+  dTHX;
+
   pcb->id = CallbackNumber(name);
 
   if (SvROK(action)) {     /*   user =>  <ref>  */
     action = SvRV(action);
 
-    if (SvTYPE(action) & SVt_PVCV) {   /* user => sub { },  user => \&func */
+    if (SvTYPE(action) == SVt_PVCV) {   /* user => sub { },  user => \&func */
       pcb->func = action;
       pcb->param = NULL;
     }
 
-    else if (SvTYPE(action) & SVt_PVAV) {   /* user => [ \&func, $param ] */
+    else if (SvTYPE(action) == SVt_PVAV) {   /* user => [ \&func, $param ] */
       pcb->func = av_shift((AV *)action);
       pcb->param = av_shift((AV *)action);
     }
@@ -380,6 +461,7 @@ void AddCallback(
 static
 void ExtractParentCallbacks(SV *parent, struct authensasl *sasl)
 {
+  dTHX;
   char *key;
   int count=0;
   long l;
@@ -475,7 +557,7 @@ client_new(pkg, parent, service, host, ...)
      hashval = hv_fetch(hash, "mechanism", 9, 0);
      if (hashval  && *hashval && SvTYPE(*hashval) == SVt_PV) {
        if (sasl->mech) Safefree(sasl->mech);
-       sasl->mech = Perl_savepv(SvPV_nolen(*hashval));
+       sasl->mech = savepv(SvPV_nolen(*hashval));
      }
    }
 
@@ -510,7 +592,7 @@ client_new(pkg, parent, service, host, ...)
         sasl_setprop(sasl->conn, SASL_SEC_PROPS, &ssp);
 #endif
         if (init) {
-          sasl->initstring = malloc(initlen);
+          New(23, sasl->initstring, initlen, char);
           if (sasl->initstring) {
             memcpy(sasl->initstring, init, initlen);
             sasl->initstringlen = initlen;
@@ -788,7 +870,8 @@ property(sasl, ...)
   PPCODE:
   {
     SASLCONST void *value=NULL;
-    char *name;
+    STRLEN proplen;
+    char *name, buf[32];
     int x, propnum=-1;
     SV *prop;
 
@@ -841,7 +924,7 @@ property(sasl, ...)
     for(x=1; x<items; x+=2) {
 
       prop = ST(x);
-      value = (void *)SvPV_nolen( ST(x+1) );
+      value = (void *)SvPV( ST(x+1), proplen );
 
       if (SvTYPE(prop) == SVt_IV) {
         propnum = SvIV(prop);
@@ -849,6 +932,18 @@ property(sasl, ...)
       else if (SvTYPE(prop) == SVt_PV) {
         name = SvPV_nolen(prop);
         propnum = PropertyNumber(name);
+      }
+
+      switch(propnum){
+        case SASL_IPLOCALPORT:
+        case SASL_IPREMOTEPORT:
+        case SASL_IP_LOCAL:
+        case SASL_IP_REMOTE:
+          SASLIPuser2lib(buf, (char *)value, proplen);
+          value = buf;
+          break;
+        default:
+          break;
       }
       sasl->code = sasl_setprop(sasl->conn, propnum, value);
       if (sasl->code != SASL_OK) {
@@ -875,5 +970,3 @@ DESTROY(sasl)
 #endif
     if (sasl->initstring)Safefree(sasl->initstring);
     Safefree(sasl);
-
-

@@ -1,5 +1,13 @@
 History of updates to Authen::SASL::Cyrus
 
+0.12
+Made Cyrus.xs more compatible with Perl API by changing function calls
+like Perl_warn() to just warn(), and defining PERL_NO_GET_CONTEXT.
+Made SASL properties which take an IP address and load it into the SASL
+library more robust by determining if the passed address is in
+"struct sockaddr" format or in "IP1.IP2.IP3.IP4;PORT" format.
+Fixed passing of "function + params" as a callback. 
+
 0.11
 Fixed t/callback.t to NOT try connecting to the LDAP server
 on localhost since that, well, doesn't work at Pause.

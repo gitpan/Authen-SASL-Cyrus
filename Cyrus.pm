@@ -2,7 +2,7 @@ package Authen::SASL::Cyrus;
 require DynaLoader;
 require Authen::SASL::Cyrus::Security;
 @ISA = qw(DynaLoader);
-$VERSION = "0.11";
+$VERSION = "0.12";
 bootstrap Authen::SASL::Cyrus $VERSION;
 
 

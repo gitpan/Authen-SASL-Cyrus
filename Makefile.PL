@@ -7,5 +7,5 @@ WriteMakefile(
     'LIBS'         => ['-lsasl2'],
     'DEFINE'       => '-DSASL2 -g',
     'PREREQ_PM'    => { Authen::SASL => 0 },
-    'INC'          => '-I/usr/include/sasl',
+    'INC'          => '-I/usr/local/include/sasl',
 );
