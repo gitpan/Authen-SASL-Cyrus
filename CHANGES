@@ -1,5 +1,15 @@
 History of updates to Authen::SASL::Cyrus
 
+0.04
+Added a method "securesocket" that takes a file handle and returns a
+new file handle that is tied to the Security subclass added in 0.03. 
+In this way, a client program can take the object returned from
+client_new() and call the securesocket() method on it, passing in the
+client's file handle, without ever having to know about the Security
+subclass.  Also added a "tiehandle" method which will take the same
+file handle as "securesocket", and tie it directly to the Security
+subclass. The difference being "securesocket" returns a new file handle,
+and "tiehandle" ties the handle passed in.
 
 0.03  
 Added encryption layer. Cyrus.xs now has encode() and decode()

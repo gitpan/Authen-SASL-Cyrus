@@ -9,7 +9,7 @@ sub TIEHANDLE {
   my($class, $fh, $conn) = @_;
   my($ref);
 
-  $ref->{fh} = *{$fh};
+  $ref->{fh} = $fh;
   $ref->{conn} = $conn;
 
   bless($ref,$class);
