@@ -1,5 +1,9 @@
 History of updates to Authen::SASL::Cyrus
 
+0.11
+Fixed t/callback.t to NOT try connecting to the LDAP server
+on localhost since that, well, doesn't work at Pause.
+
 0.10
 Added better callback management, Perl memory management,
 and three test scripts, as written by Ulrich Pfeifer.
