@@ -1,6 +1,6 @@
-Cyrus.pm
 Cyrus.pod
 Cyrus.xs
+Cyrus.pm
 MANIFEST
 Makefile.PL
 typemap
