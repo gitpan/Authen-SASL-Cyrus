@@ -1,5 +1,8 @@
 History of updates to Authen::SASL::Cyrus
 
+0.07
+Memcpy fix provided by Maurice Massar
+
 0.06
 Added SASL V2 support patch provided by Leif Johansson.
 
