@@ -1,6 +1,8 @@
+Cyrus.pm
 Cyrus.pod
 Cyrus.xs
-Cyrus.pm
 MANIFEST
+CHANGES
 Makefile.PL
 typemap
+lib/Authen/SASL/Cyrus/Security.pm

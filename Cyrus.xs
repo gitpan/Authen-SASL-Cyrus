@@ -412,6 +412,60 @@ client_step(sasl, instring)
 
 
 
+char *
+encode(sasl, instring)
+    struct authensasl *sasl
+    char *instring
+  PPCODE:
+  {
+    char *outstring=NULL;
+    int rc;
+    unsigned int inlen, outlen=0;
+
+
+    if (sasl->errormsg) {
+      XSRETURN_UNDEF;
+    }
+    instring = SvPV(ST(1),inlen);
+
+    rc = sasl_encode(sasl->conn, instring, inlen, &outstring, &outlen);
+    if (rc != SASL_OK) {
+      sasl->errormsg = "sasl_encode failed";
+      XSRETURN_UNDEF;
+    }
+    XPUSHp(outstring, outlen);
+  }
+
+
+
+
+char *
+decode(sasl, instring)
+    struct authensasl *sasl
+    char *instring
+  PPCODE:
+  {
+    char *outstring=NULL;
+    int rc;
+    unsigned int inlen, outlen=0;
+
+
+    if (sasl->errormsg) {
+      XSRETURN_UNDEF;
+    }
+    instring = SvPV(ST(1),inlen);
+
+    rc = sasl_decode(sasl->conn, instring, inlen, &outstring, &outlen);
+    if (rc != SASL_OK) {
+      sasl->errormsg = "sasl_decode failed";
+      XSRETURN_UNDEF;
+    }
+    XPUSHp(outstring, outlen);
+  }
+
+
+
+
 int
 callback(sasl, ...)
     struct authensasl *sasl

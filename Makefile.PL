@@ -5,5 +5,5 @@ use ExtUtils::MakeMaker;
 WriteMakefile(
   VERSION_FROM    => "Cyrus.pm",
   NAME            => "Authen::SASL::Cyrus",
-  LIBS            => [ '-lsasl' ],
+  LIBS             => [ '-lsasl' ],
 );
