@@ -1,11 +1,13 @@
 Cyrus.pm
-Cyrus.pod
 Cyrus.xs
+Cyrus.pod
 MANIFEST
 CHANGES
 Makefile.PL
 typemap
 lib/Authen/SASL/Cyrus/Security.pm
-t/basic.t
-t/callback.t
-t/user.t
+t/plain.t
+t/common.pl
+t/gssapiskel.pl
+README
+META.yml                                 Module meta-data (added by MakeMaker)

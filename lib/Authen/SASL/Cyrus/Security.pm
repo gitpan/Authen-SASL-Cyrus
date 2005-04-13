@@ -16,23 +16,10 @@ sub TIEHANDLE {
   return($ref);
 }
 
-
-
-
-sub FETCH {
-  my($ref) = @_;
-  return($ref->{fh});
-}
-
-
-
 sub FILENO {
   my($ref) = @_;
   return(fileno($ref->{fh}));
 }
-
-
-
 
 sub READ {
   my($ref, $buf, $len, $offset) = @_;
@@ -59,22 +46,20 @@ sub READ {
     $ref->{readbuf} = "";
   }
 
-  # Read in bytes from the socket, and decrypt them
-  $rc = sysread($fh, $cryptbuf, ($len < 8)?8:$len);
+  # Read in bytes from the socket, and decrypt it
+  $rc = sysread($fh, $cryptbuf, $len);
   return($didread) if ($rc <= 0);
-  $didread = length($cryptbuf);
   $clearbuf = $ref->{conn}->decode($cryptbuf);
-  return(-1) if (!defined $clearbuf);
+  return(-1) if not defined ($clearbuf);
 
   # It may be that more encrypted bytes are needed to decrypt an entire "block"
   # If decode() returned nothing, read in more bytes (arbitrary amounts) until
   # an entire encrypted block is available to decrypt.
   while ($clearbuf eq "") {
-    $rc = sysread($fh, $cryptbuf, 8, $didread);
-    last if ($rc < 8);
-    $didread += $rc;
+    $rc = sysread($fh, $cryptbuf, 8);
+    return($rc) if ($rc <= 0);
     $clearbuf = $ref->{conn}->decode($cryptbuf);
-    return(-1) if (!defined $clearbuf);
+    return(-1) if not defined ($clearbuf);
   }
 
   # Copy what was asked for, stash the rest
@@ -83,9 +68,6 @@ sub READ {
 
   return($len);
 }
-
-
-
 
 # Encrypting a write() to a filehandle is much easier than reading, because
 # all the data to be encrypted is immediately available
@@ -99,8 +81,11 @@ sub WRITE {
   print $fh $cryptbuf;
 }
 
-
-
+# Given a GLOB ref, tie the filehandle of the GLOB to this class
+sub new {
+  my($class, $fh, $conn) = @_;
+  tie(*{$fh}, $class, $fh, $conn);
+}
 
 # Forward close to the tied handle
 sub CLOSE {
@@ -108,18 +93,6 @@ sub CLOSE {
   close($ref->{fh});
   $ref->{fh} = undef;
 }
-
-
-
-
-# Given a GLOB ref, tie the filehandle of the GLOB to this class
-sub new {
-  my($class, $fh, $conn) = @_;
-  tie(*{$fh}, $class, $fh, $conn);
-}
-
-
-
 
 # Avoid getting too circular in the free'ing of an object in this class.
 sub DESTROY {
