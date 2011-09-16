@@ -1,13 +1,11 @@
 package Authen::SASL::Cyrus;
 require DynaLoader;
 require Authen::SASL::Cyrus::Security;
-require Exporter;
-
-@ISA = qw(DynaLoader);# Exporter);
-
-$VERSION = "0.13-server";
-
+@ISA = qw(DynaLoader);
+$VERSION = "0.13";
 bootstrap Authen::SASL::Cyrus $VERSION;
+
+
 
 #
 # Take a client filehandle and tie it to the Security subclass to

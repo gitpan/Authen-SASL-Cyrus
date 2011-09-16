@@ -1,52 +1,34 @@
 History of updates to Authen::SASL::Cyrus
 
-0.13-server
+0.13
+Updated the WRITE() method to use syswrite() and account for
+variable buffer sizes in SASL.
 
-Russ Allbery: the 0.12-server distribution of this module has a typemap that
-ends up casting the pointer return from server_new and client_new through an
-int.  This looks like it's causing pointer truncation and various problems on
-some 64-bit platforms (particularly Debian alpha and Debian ia64).
-
-There is a simpler fix than the patch below (just replacing int with long will
-work on most platforms, probably), but reading through the perlxs man page,
-there's apparently a specific way in which one is supposed to handle module
-data T_PTROBJ_SPECIAL.  I went ahead and implemented that, which also improves
-error reporting a bit.  After applying the following patch, the resulting C
-code no longer casts through an int (it casts through an IV instead, but that's
-sufficient on all Unix platforms at least).
-
-typedef for struct authensasl to Authen_SASL_Cyrus.
-
-0.12-server
-merged some of the changes from Authen::SASL::Cyrus 0.12
-changed version named in order to distinguish from the Authen::SASL::Cyrus by Mark Adamson.
+0.12
+Made Cyrus.xs more compatible with Perl API by changing function calls
+like Perl_warn() to just warn(), and defining PERL_NO_GET_CONTEXT.
+Made SASL properties which take an IP address and load it into the SASL
+library more robust by determining if the passed address is in
+"struct sockaddr" format or in "IP1.IP2.IP3.IP4;PORT" format.
+Fixed passing of "function + params" as a callback. 
 
 0.11
-added setpass and checkpass methods
-added setpass callback
-applied a patch by Graham Barr (found with google) for enabling GSSAPI
-authentication (fix a problem in Security.pm)
-added a check for undef return values when using sub-callbacks (Thanks
-to Quanah Gibson-Mount for discovering this one)
+Fixed t/callback.t to NOT try connecting to the LDAP server
+on localhost since that, well, doesn't work at Pause.
 
 0.10
-Added the iplocalport and ipremote port to *_new methods, after filling
-in the appropriate string (see doc) ASC is able to manage KERBEROS_V4
-on the server side
-solved bug in property handling (strlen(NULL) after received NULL
-as data from a sasl_getprop)
+Added better callback management, Perl memory management,
+and three test scripts, as written by Ulrich Pfeifer.
 
 0.09
-Added callback documenation
-Perl-Callback types (PVMG, PV, PVIV) handling extended
+Changed securesocket GLOB, as suggested by Marius Tomaschewski.
+Extended SASL2 support.
 
-0.08-desy-internal
-Almost complete rewrite of Perlcallbacks from Cyrus.xs.
-SASL-Server functionality added, so servers written in Perl can use
-SASL as Authentication Layer. Synchronize callbacks between Cyrus SASL
-v1 and v2.
-Many changes in the internal handling of sasl variables.
-Documentation inside the XS-file, do motivate myself to write docs
+0.08
+Changed the "code" routine to return the result code of the
+last SASL library call. This allows differentiation of the
+result of the client_step returning a zero byte string vs.
+it saying authentication is complete.
 
 0.07
 Memcpy fix provided by Maurice Massar
@@ -64,7 +46,7 @@ to help PerlCallback() decide which parameter is the perl context.
 
 0.04
 Added a method "securesocket" that takes a file handle and returns a
-new file handle that is tied to the Security subclass added in 0.03.
+new file handle that is tied to the Security subclass added in 0.03. 
 In this way, a client program can take the object returned from
 client_new() and call the securesocket() method on it, passing in the
 client's file handle, without ever having to know about the Security
@@ -73,7 +55,7 @@ file handle as "securesocket", and tie it directly to the Security
 subclass. The difference being "securesocket" returns a new file handle,
 and "tiehandle" ties the handle passed in.
 
-0.03
+0.03  
 Added encryption layer. Cyrus.xs now has encode() and decode()
 methods. Added a "Security" subclass that can be used to tie a
 filehandle to perform encryption on write() and decryption on read().

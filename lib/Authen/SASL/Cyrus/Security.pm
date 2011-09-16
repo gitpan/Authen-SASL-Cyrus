@@ -16,10 +16,23 @@ sub TIEHANDLE {
   return($ref);
 }
 
+
+
+
+sub FETCH {
+  my($ref) = @_;
+  return($ref->{fh});
+}
+
+
+
 sub FILENO {
   my($ref) = @_;
   return(fileno($ref->{fh}));
 }
+
+
+
 
 sub READ {
   my($ref, $buf, $len, $offset) = @_;
@@ -46,20 +59,22 @@ sub READ {
     $ref->{readbuf} = "";
   }
 
-  # Read in bytes from the socket, and decrypt it
-  $rc = sysread($fh, $cryptbuf, $len);
+  # Read in bytes from the socket, and decrypt them
+  $rc = sysread($fh, $cryptbuf, ($len < 8)?8:$len);
   return($didread) if ($rc <= 0);
+  $didread = length($cryptbuf);
   $clearbuf = $ref->{conn}->decode($cryptbuf);
-  return(-1) if not defined ($clearbuf);
+  return(-1) if (!defined $clearbuf);
 
   # It may be that more encrypted bytes are needed to decrypt an entire "block"
   # If decode() returned nothing, read in more bytes (arbitrary amounts) until
   # an entire encrypted block is available to decrypt.
   while ($clearbuf eq "") {
-    $rc = sysread($fh, $cryptbuf, 8);
-    return($rc) if ($rc <= 0);
+    $rc = sysread($fh, $cryptbuf, 8, $didread);
+    last if ($rc < 8);
+    $didread += $rc;
     $clearbuf = $ref->{conn}->decode($cryptbuf);
-    return(-1) if not defined ($clearbuf);
+    return(-1) if (!defined $clearbuf);
   }
 
   # Copy what was asked for, stash the rest
@@ -69,23 +84,50 @@ sub READ {
   return($len);
 }
 
+
+
+
 # Encrypting a write() to a filehandle is much easier than reading, because
 # all the data to be encrypted is immediately available
 sub WRITE {
-  my($ref,$string,$len) = @_;
-  my($fh, $clearbuf, $cryptbuf);
+  my($ref,$string,$clearSize) = @_;
 
-  $fh = $ref->{fh};
-  $clearbuf = substr($string, 0, $len);
-  $cryptbuf = $ref->{conn}->encode($clearbuf);
-  print $fh $cryptbuf;
+  my $fh = $ref->{fh};
+
+  # Divide the entire cleartext into chunks that SASL can encrypt
+  my $maxChunkSize = $ref->{conn}->property("maxout");
+  $maxChunkSize = $clearSize if (! defined $maxChunkSize);
+  my $clearOffset = 0;
+  while ($clearOffset < $clearSize) {
+    my $chunkSize = $clearSize - $clearOffset;
+    if ($chunkSize > $maxChunkSize) {
+      $chunkSize = $maxChunkSize;
+    }
+    my $clearbuf = substr($string, $clearOffset, $chunkSize);
+
+    # Encrypt the next chunk
+    my $cryptbuf = $ref->{conn}->encode($clearbuf);
+    my $cryptSize = length($cryptbuf);
+    last if (($ref->{conn}->code != 0) || ($cryptSize == 0));
+
+    # Send the crypt text in however many syswrite() ops it takes
+    my $cryptOffset = 0;
+    while ($cryptOffset < $cryptSize) {
+      my $n = syswrite($fh, $cryptbuf, $cryptSize - $cryptOffset, $cryptOffset);
+      last if ($n <= 0);
+      $cryptOffset += $n;
+    }
+    last if ($cryptOffset < $cryptSize);
+
+    $clearOffset += $chunkSize;
+  }
+
+  # Return the number of CLEARTEXT bytes sent, not encrypted bytes
+  return $clearOffset;
 }
 
-# Given a GLOB ref, tie the filehandle of the GLOB to this class
-sub new {
-  my($class, $fh, $conn) = @_;
-  tie(*{$fh}, $class, $fh, $conn);
-}
+
+
 
 # Forward close to the tied handle
 sub CLOSE {
@@ -93,6 +135,18 @@ sub CLOSE {
   close($ref->{fh});
   $ref->{fh} = undef;
 }
+
+
+
+
+# Given a GLOB ref, tie the filehandle of the GLOB to this class
+sub new {
+  my($class, $fh, $conn) = @_;
+  tie(*{$fh}, $class, $fh, $conn);
+}
+
+
+
 
 # Avoid getting too circular in the free'ing of an object in this class.
 sub DESTROY {
